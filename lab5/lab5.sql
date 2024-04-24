@@ -1,31 +1,31 @@
 USE [library]
 
 GO
+
 --1. Создать представление, позволяющее получать список читателей с количеством находящихся у каждого читателя на руках книг,
 -- но отображающее только таких читателей, по которым имеются задолженности, т.е. на руках у читателя есть хотя бы одна книга,
 -- которую он должен был вернуть до наступления текущей даты.
-CREATE VIEW [debtors]
+
+CREATE OR ALTER VIEW [debtors]
 AS
-WITH [debtors_ids] ([id])
-AS
-(
-	SELECT
-		[sb_subscriber]
-	FROM
-		[subscriptions]
-	WHERE
-		[sb_is_active] = 'Y'
-		AND [sb_finish] >= GETDATE()
-)
 SELECT
 	[s_id],
-	[s_name]
+	[s_name],
+	(
+		SELECT
+			COUNT([sb_book])
+		FROM
+			[subscriptions]
+		WHERE
+			[sb_subscriber] = [s_id]
+	) AS [n_books]
 FROM
 	[subscribers]
 	JOIN [subscriptions]
 		ON [s_id] = [sb_subscriber]
 WHERE
-	[sb_subscriber] IN (SELECT * FROM [debtors_ids])
+    [sb_is_active] = 'Y'
+    AND [sb_finish] < GETDATE()
 GROUP BY
 	[s_id], [s_name]
 
@@ -34,19 +34,16 @@ GO
 --4 Создать представление, через которое невозможно получить информацию о том,
 -- какая конкретно книга была выдана читателю в любой из выдач.
 
-CREATE VIEW [obscured_subscriptions]
+CREATE OR ALTER VIEW [obscured_subscriptions]
 AS
 	SELECT
 		[sb_id],
 		[sb_subscriber],
-		[s_name],
 		[sb_start],
 		[sb_finish]
 		[sb_is_active]
 	FROM
 		[subscriptions]
-		JOIN [subscribers]
-			ON [sb_subscriber] = [s_id]
 
 GO
 
@@ -70,8 +67,8 @@ BEGIN
                                             OR (SELECT COUNT([sb_id])
                                                 FROM [subscriptions]
                                                 WHERE [sb_subscriber] = [inserted].[sb_subscriber]
-                                                AND [sb_start] > DATEADD(MM, -6, GETDATE())) > 100
-                                            OR DATEADD(DD, 3, [sb_start]) >= [sb_finish])
+                                                AND [sb_start] > DATEADD(mm, -6, GETDATE())) > 100
+                                            OR DATEDIFF(dd, [sb_start], [sb_finish]) < 3)
 
     IF @violations_count  > 0
     BEGIN
@@ -83,43 +80,29 @@ END
 
 GO
 
---14 Создать триггер, не позволяющий выдать книгу читателю, у которого на руках находится пять и более книг,
--- при условии, что суммарное время, оставшееся до возврата всех выданных ему книг, составляет менее одного месяца.
+GO
 
-CREATE OR ALTER TRIGGER [trg_task_14]
-ON [subscriptions]
+--15. Создать триггер, допускающий регистрацию в библиотеке только таких авторов, имя которых не содержит никаких символов кроме букв, цифр, знаков - (минус), ' (апостроф) и пробелов (не допускается два и более идущих подряд пробела).
+
+CREATE OR ALTER TRIGGER [trg_task_15]
+ON [authors]
 AFTER INSERT, UPDATE
 AS
 BEGIN
-    DECLARE @violations_count INT =     (SELECT 
-                                            COUNT([sb_id])
+    DECLARE @violations_count INT =     (
+                                        SELECT
+                                            COUNT([a_id])
                                         FROM
                                             [inserted]
                                         WHERE
-                                            (
-                                                SELECT
-                                                    COUNT([sb_book])
-                                                FROM
-                                                    [subscriptions]
-                                                WHERE
-                                                    [sb_subscriber] = [inserted].[sb_subscriber]
-                                                    AND [sb_is_active] = 'Y'
-                                            ) >= 5
-                                            AND 
-                                            (
-                                                SELECT
-                                                    (SUM(DATEDIFF(dd, [sb_start], [sb_finish])))
-                                                FROM
-                                                    [subscriptions]
-                                                WHERE
-                                                    [sb_subscriber] = [inserted].[sb_subscriber]
-                                                    AND [sb_is_active] = 'Y'
-                                            ) < 31
+                                            PATINDEX('%[^ A-Za-z0-9-'']%', [a_name]) != 0
+                                            OR PATINDEX('%  %', [a_name]) != 0
+                                        )
 
     IF @violations_count > 0
     BEGIN
         ROLLBACK TRANSACTION
-        RAISERROR('This violates task 14 rules...', 16, 1)
+        RAISERROR('This violates task 15 rules...', 16, 1)
     END
 END
 
@@ -144,7 +127,7 @@ BEGIN
             FROM
                 [inserted]
             WHERE
-                DATEADD(mm, 6, [sb_start]) <= GETDATE()
+                DATEDIFF(mm, [sb_start], GETDATE()) >= 6
         )
 END
 
